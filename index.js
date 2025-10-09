@@ -2,7 +2,9 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const db = require('./db'); // Import connection pool ที่เราสร้างไว้
+const db = require('./db'); 
+const multer = require('multer');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -29,6 +31,16 @@ const verifyToken = (req, res, next) => {
     }
     return next();
 };
+
+// --- ตั้งค่า Multer ---
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, 'public/images'),
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, uniqueSuffix + path.extname(file.originalname));
+    }
+});
+const upload = multer({ storage: storage });
 
 
 // === API Endpoint สำหรับ Login (แก้ไขลำดับการทำงาน) ===
@@ -435,7 +447,7 @@ app.post('/api/cosmetics', async (req, res) => {
             return res.status(400).json({ message: "Name, Brand, and Type are required." });
         }
 
-        // ✨ 1. แปลง Array ของ Look IDs [1, 5, 9] ให้เป็น String "1,5,9" ก่อนบันทึก ✨
+        // ✨ 1. แปลง Array ของ "ชื่อ" ["ธรรมชาติ", "Everyday Glam"] ให้เป็น String "ธรรมชาติ,Everyday Glam" ✨
         const lookTypeString = Array.isArray(suitableLookType) ? suitableLookType.join(',') : '';
 
         // ✨ 2. แก้ไขชื่อคอลัมน์ใน SQL ให้ถูกต้อง ✨
@@ -479,7 +491,7 @@ app.put('/api/cosmetics/:id', async (req, res) => {
 
         const adminUserId = 1; // ในระบบจริง ให้ใช้ ID ของ Admin ที่ login อยู่
 
-        // ✨ 2. แปลง Array ของ Look IDs [1, 5, 9] ให้เป็น String "1,5,9" ก่อนบันทึก ✨
+        // ✨ 2. แปลง Array ของ "ชื่อ" เป็น String เหมือนตอนเพิ่ม ✨
         const lookTypeString = Array.isArray(suitableLookType) ? suitableLookType.join(',') : '';
 
         // ✨ 3. เพิ่มคอลัมน์ใหม่ๆ ทั้งหมดลงในคำสั่ง UPDATE ✨
@@ -539,6 +551,16 @@ app.delete('/api/cosmetics/:id', async (req, res) => {
         console.error("Error deleting cosmetic:", error);
         res.status(500).json({ message: "Server error." });
     }
+});
+
+// --- API Endpoint สำหรับรับไฟล์อัปโหลด ---
+app.post('/api/upload', upload.single('productImage'), (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded.' });
+    }
+    // ส่ง Relative Path กลับไป
+    const relativePath = `/images/${req.file.filename}`;
+    res.status(200).json({ imageUrl: relativePath });
 });
 
 // --- รัน Server ---

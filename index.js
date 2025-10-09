@@ -10,6 +10,7 @@ const app = express();
 // --- Middleware ---
 app.use(cors()); // อนุญาตให้ Frontend (React) เรียกใช้ API นี้ได้
 app.use(express.json()); // ทำให้ Server อ่านข้อมูลแบบ JSON ที่ส่งมาได้
+app.use(express.static('public'));
 
 // --- Middleware สำหรับตรวจสอบ Token (ด่านตรวจ) ---
 const verifyToken = (req, res, next) => {
@@ -386,6 +387,156 @@ app.delete('/api/looks/:id', async (req, res) => {
         res.status(200).json({ message: "Look deleted successfully." });
     } catch (error) {
         console.error("Error deleting look:", error);
+        res.status(500).json({ message: "Server error." });
+    }
+});
+
+// === API Endpoints สำหรับจัดการ Cosmetics (แก้ไขให้มีการบันทึก Log) ===
+
+// 1. API สำหรับดึงรายชื่อแบรนด์ทั้งหมด (เหมือนเดิม)
+app.get('/api/brands', async (req, res) => {
+    try {
+        const [brands] = await db.query("SELECT BrandID, BrandName FROM Brand ORDER BY BrandName ASC");
+        res.status(200).json(brands);
+    } catch (error) {
+        console.error("Error fetching brands:", error);
+        res.status(500).json({ message: "Server error." });
+    }
+});
+
+// 2. API สำหรับดึงข้อมูลสินค้าทั้งหมด (เหมือนเดิม)
+app.get('/api/cosmetics', async (req, res) => {
+    try {
+        const [products] = await db.query(`
+            SELECT c.*, b.BrandName 
+            FROM Cosmetics c 
+            LEFT JOIN Brand b ON c.BrandID = b.BrandID
+            ORDER BY c.CosmeticID DESC
+        `);
+        res.status(200).json(products);
+    } catch (error) {
+        console.error("Error fetching cosmetics:", error);
+        res.status(500).json({ message: "Server error." });
+    }
+});
+
+// 3. API สำหรับเพิ่มสินค้าใหม่ (✨ เพิ่มการบันทึก Log ✨)
+app.post('/api/cosmetics', async (req, res) => {
+    try {
+        const { 
+            Name, ShadeName, Type, Description, Price, ImageURL, ProductLink, BrandID, 
+            suitableSkinTone, suitableLookType, 
+            HexCode, RGBCode, Lab_L, Lab_a, Lab_b 
+        } = req.body;
+        
+        const adminUserId = 1; // ในระบบจริง ให้ใช้ ID ของ Admin ที่ login อยู่
+
+        if (!Name || !BrandID || !Type) {
+            return res.status(400).json({ message: "Name, Brand, and Type are required." });
+        }
+
+        // ✨ 1. แปลง Array ของ Look IDs [1, 5, 9] ให้เป็น String "1,5,9" ก่อนบันทึก ✨
+        const lookTypeString = Array.isArray(suitableLookType) ? suitableLookType.join(',') : '';
+
+        // ✨ 2. แก้ไขชื่อคอลัมน์ใน SQL ให้ถูกต้อง ✨
+        const [result] = await db.query(
+            `INSERT INTO Cosmetics 
+                (Name, ShadeName, Type, Description, Price, ImageURL, ProductLink, BrandID, 
+                suitableSkinTone, HexCode, RGBCode, Lab_L, Lab_a, Lab_b, suitableLookType) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                Name, ShadeName, Type, Description, Price, ImageURL, ProductLink, BrandID, 
+                suitableSkinTone, HexCode, RGBCode, Lab_L, Lab_a, Lab_b, lookTypeString
+            ]
+        );
+        
+        // --- ส่วนที่เพิ่มเข้ามา ---
+        const logDescription = `เพิ่มสินค้าใหม่: '${Name}'`;
+        await db.query(
+            `INSERT INTO Activity_Log (operator_id, action_type, description, status) VALUES (?, ?, ?, ?)`,
+            [adminUserId, 'PRODUCT_CREATE', logDescription, 'เพิ่ม']
+        );
+        // --- สิ้นสุดส่วนที่เพิ่ม ---
+
+        res.status(201).json({ CosmeticID: result.insertId, ...req.body });
+    } catch (error) {
+        console.error("Error adding cosmetic:", error);
+        res.status(500).json({ message: "Server error." });
+    }
+});
+
+// 4. API สำหรับแก้ไขข้อมูลสินค้า (✨ เพิ่มการบันทึก Log ✨)
+app.put('/api/cosmetics/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // ✨ 1. เพิ่มการดึงข้อมูลใหม่ๆ ทั้งหมดจาก req.body ✨
+        const { 
+            Name, ShadeName, Type, Description, Price, ImageURL, ProductLink, BrandID, 
+            suitableSkinTone, suitableLookType, 
+            HexCode, RGBCode, Lab_L, Lab_a, Lab_b 
+        } = req.body;
+
+        const adminUserId = 1; // ในระบบจริง ให้ใช้ ID ของ Admin ที่ login อยู่
+
+        // ✨ 2. แปลง Array ของ Look IDs [1, 5, 9] ให้เป็น String "1,5,9" ก่อนบันทึก ✨
+        const lookTypeString = Array.isArray(suitableLookType) ? suitableLookType.join(',') : '';
+
+        // ✨ 3. เพิ่มคอลัมน์ใหม่ๆ ทั้งหมดลงในคำสั่ง UPDATE ✨
+        await db.query(
+            `UPDATE Cosmetics SET 
+                Name = ?, ShadeName = ?, Type = ?, Description = ?, Price = ?, 
+                ImageURL = ?, ProductLink = ?, BrandID = ?, suitableSkinTone = ?, 
+                suitableLookType = ?, HexCode = ?, RGBCode = ?, Lab_L = ?, Lab_a = ?, Lab_b = ? 
+            WHERE CosmeticID = ?`,
+            [
+                Name, ShadeName, Type, Description, Price, 
+                ImageURL, ProductLink, BrandID, suitableSkinTone, 
+                lookTypeString, HexCode, RGBCode, Lab_L, Lab_a, Lab_b, 
+                id
+            ]
+        );
+        
+        // --- ส่วนที่เพิ่มเข้ามา ---
+        const logDescription = `แก้ไขข้อมูลสินค้า ID #${id}: '${Name}'`;
+        await db.query(
+            `INSERT INTO Activity_Log (operator_id, action_type, description, status) VALUES (?, ?, ?, ?)`,
+            [adminUserId, 'PRODUCT_UPDATE', logDescription, 'แก้ไข']
+        );
+        // --- สิ้นสุดส่วนที่เพิ่ม ---
+
+        res.status(200).json({ message: "Cosmetic updated successfully." });
+    } catch (error) {
+        console.error("Error updating cosmetic:", error);
+        res.status(500).json({ message: "Server error." });
+    }
+});
+
+// 5. API สำหรับลบสินค้า (✨ เพิ่มการบันทึก Log ✨)
+app.delete('/api/cosmetics/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const adminUserId = 1; // <<-- ในระบบจริง ให้ใช้ ID ของ Admin ที่ login อยู่
+
+        // --- ส่วนที่เพิ่มเข้ามา ---
+        // ดึงชื่อสินค้ามาก่อนลบ เพื่อใช้บันทึก Log
+        const [[product]] = await db.query("SELECT Name FROM Cosmetics WHERE CosmeticID = ?", [id]);
+        const productName = product ? product.Name : `ID #${id}`;
+        // --- สิ้นสุดส่วนที่เพิ่ม ---
+        
+        await db.query("DELETE FROM Cosmetics WHERE CosmeticID = ?", [id]);
+
+        // --- ส่วนที่เพิ่มเข้ามา ---
+        const logDescription = `ลบสินค้า: '${productName}'`;
+        await db.query(
+            `INSERT INTO Activity_Log (operator_id, action_type, description, status) VALUES (?, ?, ?, ?)`,
+            [adminUserId, 'PRODUCT_DELETE', logDescription, 'ลบ']
+        );
+        // --- สิ้นสุดส่วนที่เพิ่ม ---
+
+        res.status(200).json({ message: "Cosmetic deleted successfully." });
+    } catch (error) {
+        console.error("Error deleting cosmetic:", error);
         res.status(500).json({ message: "Server error." });
     }
 });

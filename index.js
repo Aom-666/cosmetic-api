@@ -151,17 +151,21 @@ app.get('/api/stats/summary', async (req, res) => {
 // === API สำหรับกราฟ "สัดส่วนโทนสีผิว" ===
 app.get('/api/skintone-summary', async (req, res) => {
     try {
+        const allowedSkinTones = ['Fair', 'Medium', 'Brown', 'Deep Dark'];
         const [rows] = await db.query(`
             SELECT 
                 SkinTone, 
                 COUNT(*) as count 
             FROM 
-                SkinToneAnalysis  -- <<-- ใช้ตารางที่คุณส่งมา
+                SkinToneAnalysis
+            WHERE 
+                SkinTone IN (?)
             GROUP BY 
                 SkinTone
             ORDER BY
                 count DESC
-        `);
+        `,[allowedSkinTones]
+    );
         res.status(200).json(rows);
     } catch (error){
         console.error("Error fetching skintone summary:", error);
@@ -325,25 +329,23 @@ app.get('/api/looks', async (req, res) => {
     }
 });
 
-// เพิ่มลุคใหม่ (POST)
+// เพิ่มลุคใหม่ (แก้ไขแล้ว)
 app.post('/api/looks', async (req, res) => {
     try {
         const { lookName, lookCategory, description } = req.body;
-        // ✨ สมมติว่ามี req.user.userId จาก Middleware
-        const adminUserId = 1; // <<-- ในระบบจริง ให้ใช้ ID ของ Admin ที่ login อยู่
+
+        // --- ✨ ส่วนที่เพิ่มเข้ามา: ตรวจสอบชื่อซ้ำ ---
+        const [[existingLook]] = await db.query("SELECT LookID FROM MakeupLook WHERE lookName = ?", [lookName]);
+        if (existingLook) {
+            // ถ้ามีชื่อนี้อยู่แล้ว ให้ส่ง Error กลับไป
+            return res.status(409).json({ message: `ชื่อลุค '${lookName}' มีอยู่ในระบบแล้ว` });
+        }
+        // --- สิ้นสุดส่วนตรวจสอบ ---
 
         const [result] = await db.query(
             "INSERT INTO MakeupLook (lookName, lookCategory, description) VALUES (?, ?, ?)",
             [lookName, lookCategory, description]
         );
-        
-        // ✨ บันทึก Log หลังเพิ่มข้อมูลสำเร็จ ✨
-        const logDescription = `เพิ่มลุคใหม่: '${lookName}'`;
-        await db.query(
-            `INSERT INTO Activity_Log (operator_id, action_type, description, status) VALUES (?, ?, ?, ?)`,
-            [adminUserId, 'LOOK_CREATE', logDescription, 'เพิ่ม']
-        );
-
         res.status(201).json({ LookID: result.insertId, lookName, lookCategory, description });
     } catch (error) {
         console.error("Error adding new look:", error);
@@ -351,25 +353,26 @@ app.post('/api/looks', async (req, res) => {
     }
 });
 
-// แก้ไขลุค (PUT)
+// แก้ไขลุค (แก้ไขแล้ว)
 app.put('/api/looks/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const { lookName, lookCategory, description } = req.body;
-        const adminUserId = 1; // <<-- ในระบบจริง ให้ใช้ ID ของ Admin ที่ login อยู่
+
+        // --- ✨ ส่วนที่เพิ่มเข้ามา: ตรวจสอบชื่อซ้ำ (ที่ซ้ำกับ "คนอื่น" ไม่ใช่ตัวเอง) ---
+        const [[existingLook]] = await db.query(
+            "SELECT LookID FROM MakeupLook WHERE lookName = ? AND LookID != ?", 
+            [lookName, id]
+        );
+        if (existingLook) {
+            return res.status(409).json({ message: `ชื่อลุค '${lookName}' มีอยู่ในระบบแล้ว` });
+        }
+        // --- สิ้นสุดส่วนตรวจสอบ ---
 
         await db.query(
             "UPDATE MakeupLook SET lookName = ?, lookCategory = ?, description = ? WHERE LookID = ?",
             [lookName, lookCategory, description, id]
         );
-        
-        // ✨ บันทึก Log หลังแก้ไขข้อมูลสำเร็จ ✨
-        const logDescription = `แก้ไขข้อมูลลุค ID #${id}: '${lookName}'`;
-        await db.query(
-            `INSERT INTO Activity_Log (operator_id, action_type, description, status) VALUES (?, ?, ?, ?)`,
-            [adminUserId, 'LOOK_UPDATE', logDescription, 'แก้ไข']
-        );
-
         res.status(200).json({ message: "Look updated successfully." });
     } catch (error) {
         console.error("Error updating look:", error);
@@ -561,6 +564,70 @@ app.post('/api/upload', upload.single('productImage'), (req, res) => {
     // ส่ง Relative Path กลับไป
     const relativePath = `/images/${req.file.filename}`;
     res.status(200).json({ imageUrl: relativePath });
+});
+
+// 1. ดึงข้อมูลแบรนด์ทั้งหมด
+app.get('/api/brand', async (req, res) => {
+    try {
+        // ✨ ใช้ brandID และ brandName ตามตารางจริง ✨
+        const [brands] = await db.query("SELECT brandID, brandName, createdAt FROM Brand ORDER BY brandName ASC");
+        res.status(200).json(brands);
+    } catch (error) {
+        console.error("Error fetching brands:", error);
+        res.status(500).json({ message: "Server error." });
+    }
+});
+
+// 2. เพิ่มแบรนด์ใหม่
+app.post('/api/brand', async (req, res) => {
+    try {
+        const { brandName } = req.body; // รับค่าเป็น brandName
+        if (!brandName) {
+            return res.status(400).json({ message: "Brand name is required." });
+        }
+        const [result] = await db.query("INSERT INTO Brand (brandName) VALUES (?)", [brandName]);
+        
+        await db.query(`INSERT INTO Activity_Log (operator_id, action_type, description, status) VALUES (?, ?, ?, ?)`, [1, 'BRAND_CREATE', `เพิ่มแบรนด์ใหม่: '${brandName}'`, 'เพิ่ม']);
+        res.status(201).json({ brandID: result.insertId, brandName });
+    } catch (error) {
+        console.error("Error adding brand:", error);
+        res.status(500).json({ message: "Server error." });
+    }
+});
+
+// 3. แก้ไขชื่อแบรนด์
+app.put('/api/brand/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { brandName } = req.body;
+        await db.query("UPDATE Brand SET brandName = ? WHERE brandID = ?", [brandName, id]);
+
+        await db.query(`INSERT INTO Activity_Log (operator_id, action_type, description, status) VALUES (?, ?, ?, ?)`, [1, 'BRAND_UPDATE', `แก้ไขแบรนด์ ID #${id} เป็น '${brandName}'`, 'แก้ไข']);
+        res.status(200).json({ message: "Brand updated." });
+    } catch (error) {
+        console.error("Error updating brand:", error);
+        res.status(500).json({ message: "Server error." });
+    }
+});
+
+// 4. ลบแบรนด์
+app.delete('/api/brand/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const [[brand]] = await db.query("SELECT brandName FROM Brand WHERE brandID = ?", [id]);
+        await db.query("DELETE FROM Brand WHERE brandID = ?", [id]);
+        
+        if (brand) {
+            await db.query(`INSERT INTO Activity_Log (operator_id, action_type, description, status) VALUES (?, ?, ?, ?)`, [1, 'BRAND_DELETE', `ลบแบรนด์: '${brand.brandName}'`, 'ลบ']);
+        }
+        res.status(200).json({ message: "Brand deleted." });
+    } catch (error) {
+        if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+            return res.status(400).json({ message: 'ไม่สามารถลบแบรนด์นี้ได้ เนื่องจากมีสินค้าใช้งานอยู่' });
+        }
+        console.error("Error deleting brand:", error);
+        res.status(500).json({ message: "Server error." });
+    }
 });
 
 // --- รัน Server ---

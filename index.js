@@ -570,7 +570,7 @@ app.post('/api/upload', upload.single('productImage'), (req, res) => {
 app.get('/api/brand', async (req, res) => {
     try {
         // ✨ ใช้ brandID และ brandName ตามตารางจริง ✨
-        const [brands] = await db.query("SELECT brandID, brandName, createdAt FROM Brand ORDER BY brandName ASC");
+        const [brands] = await db.query("SELECT brandID, brandName, createdAt FROM Brand ORDER BY brandID ASC");
         res.status(200).json(brands);
     } catch (error) {
         console.error("Error fetching brands:", error);
